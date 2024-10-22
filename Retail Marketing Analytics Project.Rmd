@@ -1,0 +1,305 @@
+---
+title: "RMA Individual Assignment"
+output: html_document
+date: "2024-03-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+```{r}
+# Loading the necessary libraries
+library(readxl)
+library(stargazer)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(forecast)
+library(tseries)
+library(knitr)
+```
+
+# ---------------------------------------------------------
+# DATA PRE-PROCESSING
+# ---------------------------------------------------------
+
+```{r}
+# Loading the required tables
+transaction <- read_excel('/Users/sanyamjain/dunhumby breakfast.xlsx')
+product <- read_excel('/Users/sanyamjain/Breakfast Product.xlsx')
+```
+
+```{r}
+#checking to see if its correctly loaded
+transaction
+```
+
+```{r}
+#Joining both of the tables by the UPC to get a single table
+transaction_product <- transaction %>%
+  inner_join(product, by = 'UPC')
+transaction_product
+```
+
+# ---------------------------------------------------------
+# EXPOLRATORY DATA ANALYSIS
+# ---------------------------------------------------------
+
+
+
+#1. Calculating the Price Range
+# ---------------------------------------------------------
+
+```{r}
+# Calculating the price range for each category
+price_range_by_category <- transaction_product %>%
+  group_by(CATEGORY) %>%
+  summarise(Min_Price = min(PRICE, na.rm = TRUE), 
+            Max_Price = max(PRICE, na.rm = TRUE)) %>%
+  arrange(CATEGORY)
+
+# View the price ranges
+price_range_by_category
+
+```
+
+```{r}
+#checking to see which row has the minimum price as 0 in the bag snacks category
+bag_snacks_free <- transaction_product %>%
+  filter(CATEGORY == "BAG SNACKS", PRICE == 0)
+
+# View the results
+print(bag_snacks_free)
+```
+
+#1.1 VISUALISING THE PRICE RANGE
+# ---------------------------------------------------------
+
+```{r}
+library(ggplot2)
+library(scales)
+
+ggplot(price_range_by_category, aes(x = CATEGORY, ymin = Min_Price, ymax = Max_Price)) +
+  geom_linerange(size = 1, color = "blue", aes(group = CATEGORY)) + # This creates vertical lines for price ranges
+  geom_point(aes(y = Min_Price), color = "red", size = 3) +  # Points for minimum price
+  geom_point(aes(y = Max_Price), color = "green", size = 3) +  # Points for maximum price
+  coord_flip() +  # Flips the coordinates for better layout of categories
+  scale_y_continuous(labels = dollar) +  # Formats the price axis as currency
+  labs(title = "Price Range by Product Category",
+       x = "Category",
+       y = "Price ($)") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(angle = 45, hjust = 1, size = 8),
+        axis.title.y = element_blank(),  # Removing the y-axis label for cleaner look
+        plot.title = element_text(size = 14, face = "bold"),
+        panel.grid.major.x = element_blank(),  # Remove grid lines for a cleaner look
+        panel.grid.minor.x = element_blank())
+```
+
+#2 Total Sales by categories
+# ---------------------------------------------------------
+
+```{r}
+ggplot(product_sales, aes(x = reorder(CATEGORY, Total_units_sold), y = Total_units_sold, fill = CATEGORY)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Total Units Sold by Category", x = "Category", y = "Total Units Sold") +
+  coord_flip() + # Flips the axes for better readability of category names
+  theme(legend.position = "none") + 
+  scale_y_continuous(labels = scales::comma) # Format y-axis labels as whole numbers with commas
+```
+
+```{r}
+#Presenting this in a tabular format to see the exact numbers
+product_sales
+```
+
+#2.1 Product Variety in each category
+# ---------------------------------------------------------
+
+```{r}
+product_variety <- transaction_product %>%
+  group_by(CATEGORY) %>%
+  summarise(Unique_Products = n_distinct(UPC))
+
+#Viewing it in a tabular format
+product_variety
+```
+
+#3. Total average sales by all combinations of promotion mix
+# ---------------------------------------------------------
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Calculate average UNITS sold for each promotional condition
+average_units_promotion <- transaction_product %>%
+  mutate(
+    Promotion_Type = case_when(
+      FEATURE == 1 & DISPLAY == 0 & TPR_ONLY == 0 ~ "Feature Only",
+      FEATURE == 0 & DISPLAY == 1 & TPR_ONLY == 0 ~ "Display Only",
+      FEATURE == 0 & DISPLAY == 0 & TPR_ONLY == 1 ~ "TPR Only",
+      FEATURE == 1 & DISPLAY == 1 & TPR_ONLY == 0 ~ "Feature + Display",
+      FEATURE == 1 & DISPLAY == 0 & TPR_ONLY == 1 ~ "Feature + TPR",
+      FEATURE == 0 & DISPLAY == 1 & TPR_ONLY == 1 ~ "Display + TPR",
+      FEATURE == 1 & DISPLAY == 1 & TPR_ONLY == 1 ~ "All Promotions",
+      TRUE ~ "No Promotion"
+    )
+  ) %>%
+  group_by(Promotion_Type) %>%
+  summarise(Average_Units = mean(UNITS, na.rm = TRUE))
+
+# Print the table
+print(average_units_promotion)
+```
+
+```{r}
+#Visualising the above results
+ggplot(average_units_promotion, aes(x = Promotion_Type, y = Average_Units, fill = Promotion_Type)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(Average_Units, 1)), vjust = -0.3, color = "black", size = 3.5) +  # Round the labels to one decimal place
+  theme_minimal() +
+  labs(title = "Average Units Sold by Promotion Type",
+       x = "Promotion Type",
+       y = "Average Units Sold") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_brewer(palette = "Set3")
+```
+
+#4. Time series analysis and checking for seasonality
+# ---------------------------------------------------------
+
+```{r}
+# Converting the WEEK_END_DATE to Date type
+transaction_product$WEEK_END_DATE <- as.Date(transaction_product$WEEK_END_DATE, format = "%Y-%m-%d")
+
+# Aggregating sales data by week
+weekly_sales <- transaction_product %>%
+  group_by(WEEK_END_DATE) %>%
+  summarise(Total_Units = sum(UNITS))
+
+# Converting to a ts object
+ts_data <- ts(weekly_sales$Total_Units, frequency = 52)
+
+# Plotting the time series
+plot(ts_data, main = "Weekly Total Units Sold", xlab = "Week", ylab = "Total Units")
+```
+
+```{r}
+# Decomposing the series using stl
+ts_data %>% stl(s.window = "period") %>% autoplot
+```
+
+```{r}
+#checking if seasonality is present in the datatset
+nsdiffs(ts_data)
+```
+
+
+# ---------------------------------------------------------
+# BUILDING THE SCAN*PRO MODEL WITHOUT THE STORE EFFECTS
+# ---------------------------------------------------------
+
+```{r}
+breakfast_data <- transaction_product %>%
+  mutate(
+    log_units = log(UNITS), # Log transform of the units sold
+    log_price = log(PRICE), # Log transform of the price
+    price_change = PRICE - BASE_PRICE, # Change in price from the base
+    feature_display = as.numeric(FEATURE == 1 & DISPLAY == 1)
+  )
+
+# Pre-Processing the rows where the dependent or independent variables might not be valid
+breakfast_data <- breakfast_data %>%
+  filter(UNITS > 0, PRICE > 0, BASE_PRICE > 0)
+
+# Run the regression model
+scanpro_model <- lm(log_units ~ log_price + FEATURE + DISPLAY + feature_display + TPR_ONLY + price_change, data = breakfast_data)
+
+# Check the summary of the model
+summary(scanpro_model)
+```
+
+# TAKING STORE EFFECTS INTO ACCOUNT
+# ---------------------------------------------------------
+
+```{r}
+# Creating a dummy variable for each store
+breakfast_data$STORE_NUM <- as.factor(breakfast_data$STORE_NUM)
+
+# Updating the regression model to include store dummies
+scanpro_model_with_store <- lm(log_units ~ log_price + FEATURE + DISPLAY + feature_display + TPR_ONLY + price_change + STORE_NUM, data = breakfast_data)
+
+# Checking the summary of the model
+summary(scanpro_model_with_store)
+
+```
+# ---------------------------------------------------------
+# BASELINE SALES VS INCREMENTAL SALES COMPARISION
+# ---------------------------------------------------------
+
+```{r}
+#Calculating the average baseline sales
+baseline_sales <- transaction_product %>%
+  filter(FEATURE == 0 & DISPLAY == 0 & TPR_ONLY == 0) %>%
+  summarise(Baseline_Sales = mean(UNITS))
+baseline_sales
+```
+
+```{r}
+#Calculating the average sales with feature only promotion
+average_sales_feature <- breakfast_data %>%
+  filter(FEATURE == 1 & DISPLAY == 0 & TPR_ONLY == 0) %>%
+  summarise(Average_Sales_Feature = mean(UNITS, na.rm = TRUE))
+
+#Calculating the average sales with display only promotion
+average_sales_display <- breakfast_data %>%
+  filter(FEATURE == 0 & DISPLAY == 1 & TPR_ONLY == 0) %>%
+  summarise(Average_Sales_Display = mean(UNITS, na.rm = TRUE))
+
+# Calculate incremental sales for Feature and Display promotions
+incremental_sales_feature <- average_sales_feature$Average_Sales_Feature - baseline_sales$Baseline_Sales
+incremental_sales_display <- average_sales_display$Average_Sales_Display - baseline_sales$Baseline_Sales
+
+```
+
+# VISUALISING THE BASELINE AND INCREMENTAL SALES
+# ---------------------------------------------------------
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Combine the data into a single data frame for plotting
+sales_data <- data.frame(
+  Promotion_Type = c("Baseline", "Feature Incremental", "Display Incremental"),
+  Sales = c(baseline_sales$Baseline_Sales, 
+            incremental_sales_feature, 
+            incremental_sales_display)
+)
+
+# Create the bar plot
+ggplot(sales_data, aes(x = Promotion_Type, y = Sales, fill = Promotion_Type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Baseline vs Incremental Sales for Promotions",
+       x = "Type of Sales",
+       y = "Units Sold") +
+  scale_fill_brewer(palette = "Set1") +
+  geom_text(aes(label = round(Sales, 2)), vjust = -0.5, size = 3.5) # Add text labels for clarity
+
+```
+
+
+
+
